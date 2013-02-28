@@ -37,7 +37,7 @@ import glob
 import time
 import logging
 
-logging.basicConfig(filename='/tmp/pmcups.log', level=logging.DEBUG)
+logging.basicConfig(filename='/tmp/pmcups.log', level=logging.INFO)
 
 # Database variables
 # TODO use configparser and store these in a separate file
@@ -47,12 +47,10 @@ DB_PASS = 'pass'
 DB_DB = 'db'
 
 def get_job_origin(job_id):
-    origin = CONN.getJobAttributes(job_id)['job-originating-host-name']
-    return origin
+    return CONN.getJobAttributes(job_id)['job-originating-host-name']
 
 def get_job_name(job_id):
-    name = CONN.getJobAttributes(job_id)['job-name']
-    return name
+    return CONN.getJobAttributes(job_id)['job-name']
 
 def job_queued_handler(queue_name, job_id, owner):
     """ A job has entered CUPS """
@@ -63,29 +61,38 @@ def job_queued_handler(queue_name, job_id, owner):
     if queue_name != "PDF":
         return
 
-    if not str(owner).isdigit():
-        # print "User isn't numeric, exiting"
-        return
+    logging.debug("queue is good")
 
     # Fork the process so we can adequately handle multiple incoming jobs
     try:
         PID = os.fork()
         if PID == 0:
+            logging.debug("in forked process")
             # Get job details
             origin = get_job_origin(job_id)
             name = get_job_name(job_id)
             logging.info("Origin: %s Name: %s" , origin, name)
 
             # Release to /var/spool/cups-pdf/
-            CONN.setJobHoldUntil(job_id, 'no-hold')
+            try:
+                CONN.setJobHoldUntil(job_id, 'no-hold')
+            except cups.IPPError, (status, desc):
+                logging.error("IPP setJobHoldUntil error %d: %s", status, desc)
+                return
 
             # Time-out to avoid race condition whilst PDF is created
+            logging.debug("going to sleep for 5 seconds")
             time.sleep(5)
+            logging.debug("done sleeping")
 
             # Get the path of the job
             tmp_path = '/var/spool/cups-pdf/job_'+str(job_id)+'*'
             logging.info("tmp_path: %s", tmp_path)
-            orig_file_path = glob.glob(tmp_path)[0]
+            try:
+                orig_file_path = glob.glob(tmp_path)[0]
+            except:
+                logging.error("Couldn't find PDF file")
+                return
             logging.info("Original file path: %s", orig_file_path)
 
             # Get the size of the job
@@ -94,8 +101,7 @@ def job_queued_handler(queue_name, job_id, owner):
             pdflength = pdfin.getNumPages()
 
             # Create a database connection
-            print_db = MySQLdb.connect(host=DB_HOST, user=DB_USER, passwd=DB_PASS, db=DB_DB)
-            print_db_cursor = print_db.cursor()
+            print_db_cursor = PRINT_DB.cursor()
 
             # Let the database know about the print job
             print_db_cursor.execute("INSERT INTO jobs (name, barcode, ip, length) VALUES ('%s','%s','%s','%d')" % (name, owner, origin, pdflength))
@@ -121,10 +127,18 @@ def job_queued_handler(queue_name, job_id, owner):
             return
 
     except OSError, e:
-        sys.stderr.write ("fork failed: (%d) %s\n" % (e.errno, e.strerror))
+        logging.error("fork failed: (%d) %s\n" % (e.errno, e.strerror))
         return
 
 logging.info('starting printMonkey CUPS listener')
+
+# Create a database connection
+try:
+    PRINT_DB = MySQLdb.connect(host=DB_HOST, user=DB_USER, passwd=DB_PASS, db=DB_DB)
+except MySQLdb.Error, e:
+    logging.error("Could not connect to PM database")
+    logging.error("Error %d: %s", e.args[0], e.args[1])
+    sys.exit(1)
 
 # Create a connection to CUPS
 CONN = cups.Connection()
