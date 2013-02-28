@@ -35,6 +35,9 @@ from pyPdf import PdfFileReader
 import MySQLdb
 import glob
 import time
+import logging
+
+logging.basicConfig(filename='/tmp/pmcups.log', level=logging.DEBUG)
 
 # Database variables
 # TODO use configparser and store these in a separate file
@@ -54,7 +57,7 @@ def get_job_name(job_id):
 def job_queued_handler(queue_name, job_id, owner):
     """ A job has entered CUPS """
 
-    print "got JobQueuedLocal: %s, %s, %s" % (queue_name, str(job_id), owner)
+    logging.info("got JobQueuedLocal: %s, %s, %s" , queue_name, str(job_id), owner)
 
     # Check that it's come in remotely
     if queue_name != "PDF":
@@ -71,7 +74,7 @@ def job_queued_handler(queue_name, job_id, owner):
             # Get job details
             origin = get_job_origin(job_id)
             name = get_job_name(job_id)
-            print "Origin: %s Name: %s" % (origin, name)
+            logging.info("Origin: %s Name: %s" , origin, name)
 
             # Release to /var/spool/cups-pdf/
             CONN.setJobHoldUntil(job_id, 'no-hold')
@@ -81,9 +84,9 @@ def job_queued_handler(queue_name, job_id, owner):
 
             # Get the path of the job
             tmp_path = '/var/spool/cups-pdf/job_'+str(job_id)+'*'
-            print "tmp_path: %s" % tmp_path
+            logging.info("tmp_path: %s", tmp_path)
             orig_file_path = glob.glob(tmp_path)[0]
-            print "Original file path: %s" % orig_file_path
+            logging.info("Original file path: %s", orig_file_path)
 
             # Get the size of the job
             orig_file = file(orig_file_path, "rb")
@@ -106,8 +109,9 @@ def job_queued_handler(queue_name, job_id, owner):
 
             # Move the job to /var/prints/
             new_file_path = "/var/prints/" + str(printid) + ".pdf"
-            print "New file path: %s" % new_file_path
-            os.system("cp "+orig_file_path+" "+new_file_path)
+            logging.info("New file path: %s", new_file_path)
+
+            os.system("cp "+orig_file_path+" "+new_file_path) # We do this to trigger inotify
 
             # Fix the ownership
             new_file = file(new_file_path)
@@ -119,6 +123,8 @@ def job_queued_handler(queue_name, job_id, owner):
     except OSError, e:
         sys.stderr.write ("fork failed: (%d) %s\n" % (e.errno, e.strerror))
         return
+
+logging.info('starting printMonkey CUPS listener')
 
 # Create a connection to CUPS
 CONN = cups.Connection()
